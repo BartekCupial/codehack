@@ -1,0 +1,179 @@
+from codehack.bot.strategies.basic_items import (
+    apply,
+    dip,
+    drop,
+    eat,
+    engrave,
+    fire,
+    invoke,
+    kick,
+    loot,
+    pickup,
+    put_on,
+    quaff,
+    quiver,
+    read,
+    remove,
+    rub,
+    take_off,
+    throw,
+    wear,
+    wield,
+    zap,
+)
+from codehack.bot.strategies.boulder import (
+    align_boulder_for_bridge,
+    goto_boulder,
+    goto_boulder_closest_to_river,
+    push_boulder_east,
+    push_boulder_into_river,
+    push_boulder_north,
+    push_boulder_south,
+    push_boulder_west,
+)
+from codehack.bot.strategies.container import loot_container, open_container_key, open_container_kick
+from codehack.bot.strategies.cross_lava_river import (
+    acquire_levitation,
+    approach_lava_river,
+    cross_lava_river,
+    freeze_lava_horn,
+    freeze_lava_river,
+    freeze_lava_wand,
+    levitate_over_lava_river,
+)
+from codehack.bot.strategies.drop import (
+    drop_coins,
+    drop_corpses,
+    drop_cursed_items,
+    drop_unequipped_armor,
+    drop_unequipped_weapons,
+    drop_unidentified_amulets,
+    drop_unidentified_food,
+    drop_unidentified_potions,
+    drop_unidentified_rings,
+    drop_unidentified_scrolls,
+    drop_unidentified_spellbooks,
+    drop_unidentified_wands,
+    identify_items_altar,
+)
+from codehack.bot.strategies.eat import eat_corpse_floor, eat_corpse_inventory, eat_food_inventory
+from codehack.bot.strategies.emergency import (
+    emergency_escape,
+    fix_trouble,
+    heal,
+    pray,
+    rest_until_full_health,
+)
+from codehack.bot.strategies.engrave import engrave_elbereth
+from codehack.bot.strategies.escape import escape_downstairs, escape_room, escape_upstairs
+from codehack.bot.strategies.excalibur import dip_for_excalibur
+from codehack.bot.strategies.explore import (
+    explore,
+    explore_corridor,
+    explore_corridor_east,
+    explore_corridor_north,
+    explore_corridor_south,
+    explore_corridor_systematically,
+    explore_corridor_systematically_east,
+    explore_corridor_systematically_north,
+    explore_corridor_systematically_south,
+    explore_corridor_systematically_west,
+    explore_corridor_west,
+    explore_east,
+    explore_north,
+    explore_room,
+    explore_room_east,
+    explore_room_north,
+    explore_room_south,
+    explore_room_systematically,
+    explore_room_systematically_east,
+    explore_room_systematically_north,
+    explore_room_systematically_south,
+    explore_room_systematically_west,
+    explore_room_west,
+    explore_south,
+    explore_west,
+)
+from codehack.bot.strategies.fight_monster import (
+    fight_engulfed,
+    fight_melee,
+    fight_multiple_monsters,
+    fight_ranged,
+    goto_choke_point,
+    wait_for_monster,
+)
+from codehack.bot.strategies.goto import (
+    ascend_stairs,
+    descend_stairs,
+    goto_corpse,
+    goto_corridor,
+    goto_corridor_east,
+    goto_corridor_north,
+    goto_corridor_south,
+    goto_corridor_west,
+    goto_room,
+    goto_room_east,
+    goto_room_north,
+    goto_room_south,
+    goto_room_west,
+    goto_unexplored_corridor,
+    goto_unexplored_room,
+)
+from codehack.bot.strategies.identify import engrave_identify
+from codehack.bot.strategies.misc import cancel, more, no, yes
+from codehack.bot.strategies.open_doors import open_doors, open_doors_key, open_doors_kick
+from codehack.bot.strategies.pickup import (
+    examine_items,
+    pickup_amulet,
+    pickup_armor,
+    pickup_coin,
+    pickup_corpse,
+    pickup_food,
+    pickup_gem,
+    pickup_potion,
+    pickup_ring,
+    pickup_scroll,
+    pickup_spellbook,
+    pickup_tool,
+    pickup_wand,
+    pickup_weapon,
+)
+from codehack.bot.strategies.random_move import random_move
+from codehack.bot.strategies.run_away import run_away
+from codehack.bot.strategies.search import (
+    search_corridor_for_hidden_doors,
+    search_for_traps,
+    search_room_for_hidden_doors,
+)
+from codehack.bot.strategies.shop import leave_shop
+from codehack.bot.strategies.skills_simple import (
+    pray_altar,
+    quaff_fountain,
+    quaff_potion,
+    quaff_sink,
+    read_scroll,
+    zap_wand,
+)
+from codehack.bot.strategies.takeoff import (
+    takeoff_boots,
+    takeoff_cloak,
+    takeoff_gloves,
+    takeoff_helm,
+    takeoff_shield,
+    takeoff_shirt,
+    takeoff_suit,
+)
+from codehack.bot.strategies.trap import escape_trap
+from codehack.bot.strategies.wear import (
+    puton_amulet,
+    puton_ring,
+    wear_boots,
+    wear_cloak,
+    wear_gloves,
+    wear_helm,
+    wear_shield,
+    wear_shirt,
+    wear_suit,
+)
+from codehack.bot.strategies.wield import wield_melee_weapon, wield_ranged_set
+from codehack.bot.strategies.zap_monster import approach_and_zap_monster, approach_monster, zap_monster

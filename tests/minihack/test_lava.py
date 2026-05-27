@@ -1,0 +1,45 @@
+import pytest
+from nle_utils.play import play
+
+from codehack.bot.bot import Bot
+from codehack.bot.strategies import descend_stairs, pickup_potion, pickup_ring, puton_ring, quaff_potion
+from codehack.envs.minihack.play_minihack import parse_minihack_args
+
+
+def solve(bot: "Bot"):
+    while True:
+        if pickup_potion(bot):
+            pass
+        elif pickup_ring(bot):
+            pass
+
+        if quaff_potion(bot):
+            descend_stairs(bot)
+        elif puton_ring(bot):
+            descend_stairs(bot)
+
+
+@pytest.mark.usefixtures("register_components")
+class TestMazewalkMapped(object):
+    @pytest.mark.parametrize(
+        "env",
+        [
+            "MiniHack-LavaCross-Levitate-Potion-Inv-Full-v0",
+            "MiniHack-LavaCross-Levitate-Ring-Inv-Full-v0",
+            "MiniHack-LavaCross-Levitate-Potion-Pickup-Full-v0",
+            "MiniHack-LavaCross-Levitate-Ring-Pickup-Full-v0",
+        ],
+    )
+    @pytest.mark.parametrize("seed", list(range(5)))
+    def test_lava(self, env, seed):
+        # TODO: for some of the variants there are monsters which have to be dealt with
+        cfg = parse_minihack_args(
+            argv=[
+                f"--env={env}",
+                "--no-render",
+                f"--seed={seed}",
+            ]
+        )
+        cfg.strategies = [solve]
+        status = play(cfg, get_action=lambda env, *_: list(env.action_space)[-1])
+        assert status["end_status"].name == "TASK_SUCCESSFUL"

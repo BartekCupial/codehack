@@ -1,0 +1,872 @@
+import copy
+import itertools
+import re
+from argparse import Namespace
+from collections import defaultdict
+from functools import partial
+from typing import Any, Callable, Dict, List, Tuple, Union
+
+import gymnasium as gym
+import numpy as np
+from nle import nethack
+from nle.env.base import NLE
+from nle.nethack import actions as A
+from nle_utils.blstats import BLStats
+from nle_utils.glyph import SHOP, G
+from numpy import int64, ndarray
+from scipy import ndimage
+
+from codehack.bot.character import Character
+from codehack.bot.entity import Entity
+from codehack.bot.exceptions import BotFinished, BotPanic
+from codehack.bot.inventory import InventoryManager
+from codehack.bot.level import Level
+from codehack.bot.pathfinder import Movements, Pathfinder
+from codehack.bot.pvp import Pvp
+from codehack.bot.strategy import strategy
+from codehack.bot.trap_tracker import TrapTracker
+from codehack.utils import utils
+from codehack.utils.inspect import check_strategy_parameters
+from codehack.utils.strategies import corridor_detection, room_detection
+
+
+def make_primitive_strategy(action_int: int, name: str, doc: str) -> Callable:
+    """Creates a strategy function that performs a single low-level NLE action."""
+
+    @strategy
+    def primitive_func(bot: "Bot") -> bool:
+        # Primitives are simple: just take the step
+        # The Bot.step() method handles the state update (inventory, glyphs, etc.)
+        bot.step(action_int)
+        return True
+
+    primitive_func.__name__ = name
+    primitive_func.__doc__ = doc
+    return primitive_func
+
+
+class Bot:
+    def __init__(
+        self, env: gym.Env, max_strategy_steps: int = 1000, gamma: float = 0.99, no_strategy_progress_timeout: int = 150
+    ) -> None:
+        """
+        Gym environment or Namespace with the same attributes as the gym environment
+        """
+
+        self.env = env
+        self.gamma = gamma
+
+        self.movements: Movements = Movements(self)
+        self.character: Character = Character(self, self.env.unwrapped.character)
+        self.pathfinder: Pathfinder = Pathfinder(self)
+        self.inventory_manager: InventoryManager = InventoryManager(self)
+        self.pvp: Pvp = Pvp(self)
+        self.trap_tracker: TrapTracker = TrapTracker(self)
+
+        self.strategies: dict[str, Callable] = {}
+        self.panics: list[Callable] = []
+        self.max_strategy_steps = max_strategy_steps
+        self.no_strategy_progress_timeout = no_strategy_progress_timeout
+
+    def strategy(self, func: Callable) -> None:
+        """
+        Decorator to add a strategy to the bot
+
+        Args:
+            func: function to add as a strategy
+        """
+        self.strategies[func.__name__] = func
+
+    def panic(self, func: Callable) -> None:
+        """
+        Decorator to add a panic to the bot
+
+        Args:
+            func: function to add as a panic
+        """
+        self.panics.append(func)
+
+    def register_primitives(self, primitives_list: list[str]) -> None:
+        """
+        Registers low-level primitives (e.g., 'north', 'kick') as strategies.
+        Args:
+            primitives_list: List of action names to register (e.g. ['north', 'kick'])
+        """
+        from codehack.utils.primitives import PRIMITIVE_ACTION_MAP, PRIMITIVE_DESCRIPTIONS
+
+        for name in primitives_list:
+            action_int = PRIMITIVE_ACTION_MAP[name]
+            description = PRIMITIVE_DESCRIPTIONS[name]
+
+            # Create the wrapper function
+            strat_func = make_primitive_strategy(action_int, name, description)
+            self.strategy(strat_func)
+
+    def reset(self, **kwargs) -> Tuple[Dict[str, ndarray], Dict[str, Dict[str, Any]]]:
+        """
+        Reset the environment and the bot. It also updates the last_obs and last_info.
+
+        Args:
+            **kwargs -parameters to reset the environment
+        Returns:
+            observation and info
+        """
+
+        self.levels = {}
+        self.steps = 0
+        self.reward = 0.0
+        self.current_strategy = None
+        self.current_args = None
+        self.strategy_steps = 0
+        self.current_discount = 1.0
+        self.overview = {}
+        self.terrain_features = defaultdict(dict)
+        self.shops = defaultdict(list)
+        self.last_prayer = None
+
+        self._no_progress_count = 0
+
+        self.current_obs, self.current_info = self.env.reset(**kwargs)
+        self.last_obs = copy.deepcopy(self.current_obs)
+        self.last_info = copy.deepcopy(self.current_info)
+
+        self.update()
+        self.start_glyph = self.entity.glyph
+
+        self.cache_overview()
+        self.cache_terrain()
+
+        extra_stats = self.current_info.get("episode_extra_stats", {})
+        new_extra_stats = {
+            "env_steps": self.steps,
+            "strategy_reward": self.reward,
+            "strategy_useful": self.steps > 0,
+        }
+        self.current_info["episode_extra_stats"] = {**extra_stats, **new_extra_stats}
+
+        return self.current_obs, self.current_info
+
+    def internal_step(self, action: int) -> None:
+        obs, reward, self.terminated, self.truncated, info = self.env.step(self.env.actions.index(action))
+
+        if self.terminated or self.truncated:
+            raise BotFinished
+
+        return obs, reward, self.terminated, self.truncated, info
+
+    def step(self, action: int) -> None:
+        """
+        Take a step in the environment
+
+        Args:
+            action: action to take
+        """
+        self.last_obs = copy.deepcopy(self.current_obs)
+        self.last_info = copy.deepcopy(self.current_info)
+        try:
+            self.current_obs, reward, self.terminated, self.truncated, self.current_info = self.env.step(
+                self.env.actions.index(action)
+            )
+        except ValueError as e:
+            # Handle the case where the action is not in the list of allowed actions,
+            # many minihack environments only allow subset of possible actions
+            if str(e) == "tuple.index(x): x not in tuple":
+                raise BotPanic(f"action not allowed, err: {e}")
+            else:
+                raise e
+
+        self.steps += 1
+        self.reward += reward * self.current_discount
+        self.current_discount *= self.gamma
+
+        if self.terminated or self.truncated:
+            raise BotFinished
+
+        self.update()
+        self.check_panics()
+
+    def strategy_step(self, action: str) -> Tuple[Dict[str, ndarray], float, bool, bool, Dict[str, Any]]:
+        """
+        Take a step in the environment using the strategies defined in the bot. If no strategy is chosen, the action
+        will decide the strategy to use. If a strategy is chosen, the action will be passed as an argument to the strategy.
+
+        Args:
+            action: action to take
+        Returns:
+            observation, reward, done, info
+        """
+        self.steps = 0
+        self.reward = 0
+        self.current_discount = 1.0
+        self.terminated = False
+        self.truncated = False
+
+        try:
+            self.strategies[action](self)
+            # if self.current_strategy is None:
+            #     if action < len(self.strategies):
+            #         self.current_strategy = self.strategies[action]
+            #         self.current_args = ()
+            #     else:
+            #         # if action is wrong do nothing, we still should increment strategy_step
+            #         # this is only relevant for multiple arguments strategies
+            #         self.strategy_steps += 1
+            # else:
+            #     self.current_args += (action,)
+
+            # # we need this if the strategy was not created because out of bounds
+            # if self.current_strategy is not None:
+            #     # TODO: support in the future, keep in mind action space will have to be changed
+            #     assert (
+            #         check_strategy_parameters(self.current_strategy) == 1
+            #     ), f"For now ban on strategies with arguments, {self.current_strategy.__name__}"
+
+            #     # If the strategy has all the arguments it needs, call it
+            #     if check_strategy_parameters(self.current_strategy) == len(self.current_args) + 1:  # +1 for self
+            #         self.current_strategy(self, *self.current_args)
+            #         self.current_strategy = None
+            #         self.current_args = None
+        except (BotPanic, BotFinished):
+            # self.current_strategy = None
+            # self.current_args = None
+            pass
+
+        # if we changed the dungeon_number we need to update the overview
+        if (
+            (self.blstats.dungeon_number, self.blstats.depth)
+            != (
+                self.overview.get("dungeon_number", -1),
+                self.overview.get("depth", -1),
+            )
+            and not self.terminated
+            and not self.truncated
+        ):
+            try:
+                self.cache_overview()
+            except BotFinished:
+                pass
+
+        # update terrain features every 50 turns
+        if (
+            (
+                self.blstats.time
+                - self.terrain_features[self.blstats.dungeon_number, self.blstats.level_number].get("time", 0)
+                > 50
+            )
+            and not self.terminated
+            and not self.truncated
+        ):
+            try:
+                self.cache_terrain()
+            except BotFinished:
+                pass
+
+        extra_stats = self.current_info.get("episode_extra_stats", {})
+        new_extra_stats = {
+            "env_steps": self.steps,
+            "strategy_reward": self.reward,
+            "strategy_useful": self.steps > 0,
+        }
+
+        if self.truncated and self.current_info["end_status"] == NLE.StepStatus.RUNNING:
+            self.current_info["end_status"] = NLE.StepStatus.ABORTED
+
+        if self.terminated or self.truncated:
+            new_extra_stats["success_rate"] = self.current_info["end_status"].name == "TASK_SUCCESSFUL"
+            new_extra_stats["strategy_steps"] = self.strategy_steps
+
+        self.current_info["episode_extra_stats"] = {**extra_stats, **new_extra_stats}
+
+        return self.current_obs, self.reward, self.terminated, self.truncated, self.current_info
+
+    def check_abort(self) -> None:
+        if self.steps > 0:
+            self._no_progress_count = 0
+        else:
+            self._no_progress_count += 1
+
+        if (
+            self._no_progress_count >= self.no_strategy_progress_timeout
+            or self.strategy_steps >= self.max_strategy_steps
+        ):
+            self.truncated = True
+            raise BotFinished
+
+    def add_message(self, message: str) -> None:
+        """
+        Adds a message to the bot's message log.
+
+        Args:
+            message: message to add
+        """
+        self.current_obs["text_message"] += "\n" + message
+
+    def search(self, num_times=1) -> None:
+        old_time = self.blstats.time
+        for char in str(num_times):
+            self.type_text(char)
+        self.step(A.Command.SEARCH)
+        turn_diff = self.blstats.time - old_time
+
+        blstats = self.blstats
+        x, y = blstats.x, blstats.y
+        height, width = self.glyphs.shape
+        for i, j in itertools.product([-1, 0, 1], repeat=2):
+            # make sure we don't have out of bounds
+            if not (0 <= y + i < height) or not (0 <= x + j < width):
+                continue
+
+            self.current_level.search_count[y + i, x + j] += turn_diff
+
+    def wait(self) -> None:
+        if A.Command.SEARCH in self.env.actions:
+            self.search()
+        elif A.MiscDirection.WAIT in self.env.actions:
+            self.step(A.MiscDirection.WAIT)
+        else:
+            self.pathfinder.random_move()
+
+    def pray(self) -> None:
+        self.step(A.Command.PRAY)
+        if "Are you sure you want to pray? [yn] (n)" in self.message:
+            self.type_text("y")
+            self.last_prayer = self.blstats.time
+
+            return True
+
+        return False
+
+    def safely_pray(self):
+        # The initial prayer timeout is set to 300 turns https://nethackwiki.com/wiki/Prayer_timeout
+        if self.last_prayer is None and self.blstats.time > 300:
+            self.pray()
+
+            return True
+
+        # safe to pray if the bot has not prayed for a while
+        elif self.last_prayer is not None and self.blstats.time - self.last_prayer > 1000:
+            self.pray()
+
+            return True
+
+        # if the bot has prayed recently, it should not pray again
+        else:
+            return False
+
+    def cast(self, spell_name, direction, fail: float = None):
+        if spell_name in self.character.known_spells:
+            spell = self.character.known_spells[spell_name]
+
+            if fail is None or spell.fail <= fail:
+                self.step(A.Command.CAST)
+
+                if "You are too impaired" in self.message:
+                    return False
+
+                self.type_text(spell.letter)
+
+                if "In what direction?" in self.message:
+                    self.step(direction)
+                    return True
+
+                # potential failure here
+                # You don't have enough energy to cast that spell.
+
+        return False
+
+    def type_text(self, text: str) -> None:
+        for char in text:
+            self.step(ord(char))
+
+    def check_panics(self):
+        for panic in self.panics:
+            panic(self)
+
+    def update(self) -> None:
+        internal = self.env.unwrapped.last_observation[self.env.unwrapped._internal_index]
+        self.in_yn_function = internal[1]
+        self.in_getlin = internal[2]
+        self.xwaitingforspace = internal[3]
+
+        self.blstats = self.get_blstats(self.current_obs)
+        self.glyphs = self.get_glyphs(self.current_obs)
+        self.message = self.get_message(self.current_obs)
+        self.tty_chars = self.get_tty_chars(self.current_obs)
+        self.tty_colors = self.get_tty_colors(self.current_obs)
+        self.cursor = self.get_cursor(self.current_obs)
+        self.entity = self.get_entity(self.current_obs)
+        self.entities = self.get_entities(self.current_obs)
+        self.current_level = self.get_current_level(self.current_obs)
+
+        self.inventory_manager.update()
+        self.character.update()
+        self.movements.update()
+        self.pathfinder.update()
+        self.pvp.update()
+        self.trap_tracker.update()
+
+        # those two right now only used for display purposes
+        terrain_needs_update = self.current_level.update(self.glyphs, self.blstats)
+        if terrain_needs_update:
+            self.update_terrain_features(self.glyphs, self.blstats)
+
+        # order matters, update shops after updating pathfinder
+        self.update_shops()
+
+    def get_blstats(self, last_obs) -> BLStats:
+        return BLStats(*last_obs["blstats"])
+
+    def get_glyphs(self, last_obs) -> ndarray:
+        """
+
+        Returns:
+            2D numpy array with the glyphs
+        """
+        return last_obs["glyphs"]
+
+    def get_message(self, last_obs) -> str:
+        """
+        Returns:
+            str with the message
+        """
+        return last_obs["text_message"]
+
+    def get_tty_chars(self, last_obs):
+        return last_obs["tty_chars"]
+
+    def get_tty_colors(self, last_obs):
+        return last_obs["tty_colors"]
+
+    def get_cursor(self, last_obs):
+        return tuple(last_obs["tty_cursor"])
+
+    def get_entity(self, last_obs) -> Entity:
+        """
+        Returns:
+            Entity object with the player
+        """
+        blstats = self.get_blstats(last_obs)
+        position = (blstats.y, blstats.x)
+        return Entity(position, self.get_glyphs(last_obs)[position])
+
+    def get_entities(self, last_obs) -> List[Union[Any, Entity]]:
+        """
+        Returns:
+            List of Entity objects with the monsters
+        """
+        glyphs = self.get_glyphs(last_obs)
+        blstats = self.get_blstats(last_obs)
+        monster_mask = utils.isin(glyphs, G.MONS, G.INVISIBLE_MON)
+        monster_mask[blstats.y, blstats.x] = 0
+
+        return [Entity(position, glyphs[position]) for position in list(zip(*np.where(monster_mask)))]
+
+    def get_current_level(self, last_obs) -> Level:
+        """
+        :return: Level object of the current level
+        """
+        blstats = self.get_blstats(last_obs)
+        key = (blstats.dungeon_number, blstats.level_number)
+        if key not in self.levels:
+            self.levels[key] = Level(*key)
+        return self.levels[key]
+
+    def describe_room(self, room_mask, dilated_corridors, dilated_doors, dilated_bars, revelable_positions):
+        def direction_to(from_xy, to_xy):
+            """
+            Returns a string describing the direction.
+            """
+            dy, dx = to_xy[0] - from_xy[0], to_xy[1] - from_xy[1]
+            dirs = []
+            if dy < 0:
+                dirs.append("north")
+            elif dy > 0:
+                dirs.append("south")
+            if dx < 0:
+                dirs.append("west")
+            elif dx > 0:
+                dirs.append("east")
+            if not dirs:
+                return "here"
+            return " ".join(dirs)
+
+        def get_distance_name(distance):
+            """
+            Returns a string describing the distance.
+            """
+            distance_order = {
+                "very far to the": 32,
+                "far to the": 16,
+                "to the": 8,
+                "a short distance to the": 4,
+                "immediately": 1,
+                "": 0,
+            }
+
+            for name, dist in distance_order.items():
+                if distance >= dist:
+                    return name
+            return "unknown"
+
+        room_coords = np.argwhere(room_mask)
+        py, px = self.entity.position
+
+        # Describe the exploration status, first check for revelable positions
+        if len(revelable_positions) > 0 and np.any(
+            np.all(room_coords[:, None] == revelable_positions[None, :], axis=-1)
+        ):
+            # Visited the room
+            if np.any(np.logical_and(self.current_level.was_on, room_mask)):
+                explored = "Partially explored"
+            else:
+                explored = "Unexplored"
+        else:
+            explored = "Explored"
+
+        # Compute the number of exits
+        corridor_exits = np.argwhere(np.logical_and(dilated_corridors, room_mask))
+        door_exits = np.argwhere(np.logical_and(dilated_doors, room_mask))
+        bar_exits = np.argwhere(np.logical_and(dilated_bars, room_mask))
+        num_exits = len(corridor_exits) + len(door_exits) + len(bar_exits)
+        num_closed_doors = len(door_exits)
+        num_bars = len(bar_exits)
+
+        # Info about features: stairs, fountains, sinks, altars, etc.
+        # TODO: add shops
+        map_features = self.terrain_features[(self.blstats.dungeon_number, self.blstats.level_number)].get(
+            "features", {}
+        )
+        room_features = defaultdict(int)
+        for feature_name, positions in map_features.items():
+            for pos in positions:
+                if room_mask[tuple(pos)]:
+                    room_features[feature_name] += 1
+
+        name_plural = {
+            "stairs down": ("stairs down", "stairs down"),
+            "stairs up": ("stairs up", "stairs up"),
+            "altar": ("an altar", "altars"),
+            "fountain": ("a fountain", "fountains"),
+            "throne": ("a throne", "thrones"),
+            "sink": ("a sink", "sinks"),
+            "trap": ("a trap", "traps"),
+            "grave": ("a grave", "graves"),
+        }
+
+        features = []
+        for feature, count in room_features.items():
+            if count == 1:
+                features.append(name_plural[feature][0])
+            elif count > 1:
+                features.append(f"{count} {name_plural[feature][1]}")
+
+        shop_name = None
+        for shop_info in self.shops[self.blstats.dungeon_number, self.blstats.level_number]:
+            if shop_info["position"] is not None and room_mask[shop_info["position"]]:
+                shop_name = shop_info["name"]
+                break
+
+        # Compute distance from the player to the room
+        room_distances = np.sum(np.abs(np.array(self.entity.position) - room_coords), axis=1)
+        idx = np.argmin(room_distances)
+
+        # Describe the distance
+        distance = get_distance_name(room_distances[idx])
+
+        # Describe the direction
+        in_this_room = room_distances[idx] == 0
+        if in_this_room:
+            direction = "here"
+        else:
+            direction = direction_to((py, px), room_coords[idx])
+
+        return {
+            "explored": explored,
+            "distance": distance,
+            "direction": direction,
+            "num_exits": num_exits,
+            "num_closed_doors": num_closed_doors,
+            "num_bars": num_bars,
+            "features": features,
+            "shop_name": shop_name,
+        }
+
+    def get_map_description(self):
+        from codehack.bot.strategies.explore import get_revelable_positions
+
+        labeled_rooms, num_rooms = room_detection(self)
+        labeled_corridors, num_corridors = corridor_detection(self)
+        revelable_positions = get_revelable_positions(self, labeled_rooms)
+
+        dilated_corridors = ndimage.binary_dilation(labeled_corridors)
+        dilated_doors = ndimage.binary_dilation(utils.isin(self.glyphs, G.DOOR_CLOSED))
+        dilated_bars = ndimage.binary_dilation(utils.isin(self.glyphs, G.BARS))
+
+        rooms_info = []
+        for room_id in range(1, num_rooms + 1):
+            room = labeled_rooms == room_id
+
+            room_info = self.describe_room(room, dilated_corridors, dilated_doors, dilated_bars, revelable_positions)
+            room_info["room_id"] = room_id
+
+            rooms_info.append(room_info)
+
+        desc = []
+        overview = self.get_cached_overview()
+        if overview:
+            desc.append("Dungeon overview:")
+            desc.extend(overview.split("\n"))
+
+        desc.append("Local map:")
+
+        for room_info in rooms_info:
+            room_id = room_info["room_id"]
+            explored = room_info["explored"]
+            distance = room_info["distance"]
+            direction = room_info["direction"]
+            num_exits = room_info["num_exits"]
+            num_closed_doors = room_info["num_closed_doors"]
+            num_bars = room_info["num_bars"]
+            shop_name = room_info["shop_name"]
+            features = "    Objects: " + ", ".join(room_info["features"]) + "." if room_info["features"] else ""
+
+            if direction == "here":
+                here = "<- You are here."
+                direction = ""
+                punctuation = ":" if features else ""
+            else:
+                here = ""
+                direction = direction
+                punctuation = ":" if features else "."
+
+            if shop_name is not None:
+                detail_text = f"{explored} {shop_name}"
+            else:
+                detail_text = f"{explored} room"
+
+            if num_exits:
+                exits_text = f"with {num_exits} {'exit' if num_exits == 1 else 'exits'}"
+
+                blocked_exits = []
+                if num_closed_doors > 0:
+                    blocked_exits.append(f"{num_closed_doors} closed doors")
+                if num_bars > 0:
+                    blocked_exits.append(f"{num_bars} iron bars")
+                exits_text += f" ({'and '.join(blocked_exits)})" if blocked_exits else ""
+
+                detail_text += " " + exits_text
+
+            text = " ".join([e for e in [detail_text, distance, direction, punctuation, here] if e])
+            text = text.replace(" :", ":")
+            text = text.replace(" .", ".")
+
+            desc.append(text)
+
+            if features:
+                desc.append(features)
+
+        return "\n".join(desc)
+
+    def get_inventory_description(self):
+        return "\n".join(
+            f"{key}:\n    " + "\n    ".join(f"{chr(item.letter)}) {item.text}" for item in category)
+            for key, category in self.inventory.inventory.items()
+            if category
+        )
+
+    def cache_overview(self):
+        obs, *_ = self.internal_step(A.Command.OVERVIEW)
+        blstats = self.get_blstats(obs)
+        message = self.get_message(obs)
+
+        self.overview = {
+            "message": message,
+            "dungeon_number": blstats.dungeon_number,
+            "depth": blstats.depth,
+        }
+
+    def get_cached_overview(self):
+        """
+        Returns the cached overview of the bot's current state.
+        """
+        return self.overview["message"] if self.overview else ""
+
+    def cache_terrain(self):
+        self.internal_step(ord("#"))
+        self.internal_step(ord("t"))
+        self.internal_step(ord("e"))
+        self.internal_step(A.MiscAction.MORE)
+
+        obs, *_ = self.internal_step(ord("b"))
+        blstats = self.get_blstats(obs)
+        glyphs = self.get_glyphs(obs)
+
+        self.update_terrain_features(glyphs, blstats, force=True)
+
+        self.internal_step(A.Command.ESC)
+
+    def update_terrain_features(self, glyphs, blstats, force: bool = False):
+        current_features = self.get_terrain_features(glyphs)
+
+        if not force:
+            past_features = self.terrain_features[(blstats.dungeon_number, blstats.level_number)].get("features", {})
+
+            # Handle stairs persistence
+            for key in ("stairs up", "stairs down"):
+                past_positions = past_features.get(key)
+                curr_positions = current_features.get(key)
+
+                if past_positions is not None and curr_positions is not None:
+                    # Merge (union) rows from both arrays
+                    merged = np.vstack((past_positions, curr_positions))
+                    merged_unique = np.unique(merged, axis=0)
+                    current_features[key] = merged_unique
+
+                elif past_positions is not None and curr_positions is None:
+                    # Current scan missed it -> carry past memory
+                    current_features[key] = past_positions
+
+        self.terrain_features[(blstats.dungeon_number, blstats.level_number)] = {
+            "features": current_features,
+            "time": blstats.time,
+        }
+
+    def get_terrain_features(self, glyphs) -> Dict[str, Any]:
+        """
+        Returns the terrain features of the current level.
+        """
+        name_glyph = {
+            "stairs down": G.STAIR_DOWN,
+            "stairs up": G.STAIR_UP,
+            "altar": G.ALTAR,
+            "fountain": G.FOUNTAIN,
+            "throne": G.THRONE,
+            "sink": G.SINK,
+            "trap": G.TRAPS,
+            "grave": G.GRAVE,
+        }
+
+        terrain_features = {}
+        for name, glyph in name_glyph.items():
+            mask = utils.isin(glyphs, glyph)
+            positions = np.argwhere(mask)
+            if len(positions) > 0:
+                terrain_features[name] = positions
+
+        return terrain_features
+
+    def update_shops(self):
+        from codehack.utils.strategies import room_detection
+
+        shop_type = None
+        matches = re.search(f"Welcome( again)? to [a-zA-Z' ]*({'|'.join(SHOP.name2id.keys())})!", self.message)
+
+        if matches is None:
+            return
+
+        shop_name = matches.groups()[1]
+        assert shop_name in SHOP.name2id, shop_name
+        shop_type = SHOP.name2id[shop_name]
+        shop_string = SHOP.id2string[shop_type]
+
+        distances = self.pathfinder.distances(self.entity.position)
+        shop_keepers = [entity.position for entity in self.entities if entity.name == "shopkeeper"]
+
+        closest_shop_keeper = min(
+            [sk for sk in shop_keepers],
+            key=lambda sk: distances.get(sk, np.inf),
+            default=None,
+        )
+
+        # assert closest_shop_keeper is not None, "Could not find shopkeeper"
+
+        self.shops[(self.blstats.dungeon_number, self.blstats.level_number)].append(
+            {
+                "name": shop_string,
+                "type": shop_type,
+                "position": closest_shop_keeper,
+            }
+        )
+
+    @property
+    def inventory(self):
+        return self.inventory_manager.inventory
+
+    @property
+    def engulfed(self):
+        return utils.isin(self.glyphs, G.SWALLOW).any()
+
+    @property
+    def stone(self):
+        """Stoned"""
+        return True if self.blstats.prop_mask & nethack.BL_MASK_STONE else False
+
+    @property
+    def slime(self):
+        """Slimed"""
+        return True if self.blstats.prop_mask & nethack.BL_MASK_SLIME else False
+
+    @property
+    def strngl(self):
+        """Strangled"""
+        return True if self.blstats.prop_mask & nethack.BL_MASK_STRNGL else False
+
+    @property
+    def foodpois(self):
+        """Food Poisoning"""
+        return True if self.blstats.prop_mask & nethack.BL_MASK_FOODPOIS else False
+
+    @property
+    def termill(self):
+        """Terminally Ill"""
+        return True if self.blstats.prop_mask & nethack.BL_MASK_TERMILL else False
+
+    @property
+    def blind(self):
+        """Blind"""
+        return True if self.blstats.prop_mask & nethack.BL_MASK_BLIND else False
+
+    @property
+    def deaf(self):
+        """Deaf"""
+        return True if self.blstats.prop_mask & nethack.BL_MASK_DEAF else False
+
+    @property
+    def stun(self):
+        """Stunned"""
+        return True if self.blstats.prop_mask & nethack.BL_MASK_STUN else False
+
+    @property
+    def conf(self):
+        """Confused"""
+        return True if self.blstats.prop_mask & nethack.BL_MASK_CONF else False
+
+    @property
+    def hallu(self):
+        """Hallucinating"""
+        return True if self.blstats.prop_mask & nethack.BL_MASK_HALLU else False
+
+    @property
+    def lev(self):
+        """Levitating"""
+        return True if self.blstats.prop_mask & nethack.BL_MASK_LEV else False
+
+    @property
+    def fly(self):
+        """Flying"""
+        return True if self.blstats.prop_mask & nethack.BL_MASK_FLY else False
+
+    @property
+    def ride(self):
+        """Riding"""
+        return True if self.blstats.prop_mask & nethack.BL_MASK_RIDE else False
+
+    @property
+    def poly(self):
+        """Polymorphed"""
+        return self.start_glyph != self.entity.glyph
+
+    @property
+    def trap(self) -> bool:
+        """Trapped"""
+        return self.trap_tracker.trapped

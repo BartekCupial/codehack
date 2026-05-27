@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codehack"
+version = "0.1.0"
+description = "Code-defined skill layer for the NetHack Learning Environment and MiniHack."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Bartek Cupial" },
+]
+keywords = ["nethack", "nle", "minihack", "reinforcement-learning", "agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "gymnasium",
+    "inflect",
+    "matplotlib",
+    "minihack",
+    "minigrid",
+    "networkx",
+    "nle",
+    "nle-progress @ git+https://github.com/BartekCupial/nle-progress.git",
+    "nle-utils @ git+https://github.com/BartekCupial/nle-utils.git",
+    "numba",
+    "numpy",
+    "pillow",
+    "scipy",
+    "setuptools<81",
+]
+
+[project.urls]
+Homepage = "https://bartekcupial.github.io/abstraction-ladder/"
+Issues = "https://github.com/BartekCupial/codehack/issues"
+Repository = "https://github.com/BartekCupial/codehack"
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "build",
+    "flake8",
+    "isort",
+    "pre-commit",
+    "pytest",
+    "ruff",
+    "twine",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+codehack = ["envs/minihack/dat/*.des"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--import-mode=importlib"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint.isort]
+known-first-party = ["codehack"]
+
+[tool.black]
+line-length = 120
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+known_first_party = ["codehack"]
+src_paths = ["src", "tests"]

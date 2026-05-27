@@ -1,0 +1,38 @@
+import ast
+import os
+from argparse import ArgumentParser
+from os.path import join
+
+from nle_utils.utils.utils import str2bool
+
+
+def add_codehack_cli_args(p: ArgumentParser) -> None:
+    p.add_argument("--codehack", type=str2bool, default=True, help="Do we want to wrap the env with CodeHack")
+    p.add_argument("--save_on_exception", type=str2bool, default=True, help="Do we want to save demo on exception")
+    p.add_argument("--strategies", type=ast.literal_eval, default=[], help="List of strategy names")
+    p.add_argument(
+        "--strategies_loc",
+        type=str,
+        default="codehack.bot.strategies",
+        help="where to search for strategies implementation",
+    )
+    p.add_argument("--max_strategy_steps", type=int, default=None, help="Strategy episode horizon.")
+    p.add_argument("--primitives", type=str2bool, default=True, help="Do we want to add primitive actions to CodeHack?")
+    p.add_argument("--panics", type=ast.literal_eval, default=[], help="List of panic names")
+    p.add_argument(
+        "--panics_loc",
+        type=str,
+        default="codehack.bot.panics",
+        help="where to search for panics implementation",
+    )
+    if "experiment" not in [action.dest for action in p._actions]:
+        p.add_argument(
+            "--experiment",
+            type=str,
+            default="default_experiment",
+            help="Unique experiment name. This will also be the name for the experiment folder in the train dir."
+            "If the experiment folder with this name aleady exists the experiment will be RESUMED!"
+            "Any parameters passed from command line that do not match the parameters stored in the experiment config.json file will be overridden.",
+        )
+    if "train_dir" not in [action.dest for action in p._actions]:
+        p.add_argument("--train_dir", default=join(os.getcwd(), "train_dir"), type=str, help="Root for all experiments")

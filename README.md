@@ -7,17 +7,16 @@ the controller chooses a semantic action such as `explore_room`, `fight_melee`, 
 `cross_lava_river`, or `descend_stairs`, and CodeHack expands that choice into primitive NetHack commands.
 
 Project page: [Up and Down the Abstraction Ladder](https://bartekcupial.github.io/abstraction-ladder/)
+Baselines: [codehack-baselines](https://github.com/BartekCupial/codehack-baselines)
 
 ## Highlights
 
 In the paper experiments, CodeHack skills:
 
-- provide 3.4x higher zero-shot NetHack progression than primitive-only control,
+- nearly triple average zero-shot NetHack progression across 14 models compared with primitive-only control,
 - reduce estimated language-model inference cost per episode by 86%,
-- produce a 5.1x larger RL dungeon-level gain under the same training budget,
+- produce a 7.2x larger average RL dungeon-level gain than primitive-only control under the same training budget,
 - retain primitive fallback through mixed control, rather than forcing every decision through skills.
-
-The current repository contains 138 decorated strategy functions and 39 custom MiniHack task registrations.
 
 ## Why CodeHack?
 
@@ -314,18 +313,16 @@ tests/
   wrappers/                  Wrapper behavior tests.
 ```
 
-The current library contains 138 decorated strategy functions across 30 strategy modules and 39 custom MiniHack task
-registrations.
 
 ## Citation
 
 If you use CodeHack, please cite the project:
 
 ```bibtex
-@misc{cupial2026abstractionladder,
-  title = {Up and Down the Abstraction Ladder: Code-Based Skills for Language Agents},
-  author = {Cupial, Bartlomiej and Tuyls, Jens and Wolczyk, Maciej and Paglieri, Davide and Klissarov, Martin and Eysenbach, Benjamin and Milos, Piotr and Narasimhan, Karthik R.},
-  year = {2026},
-  note = {Preprint}
+@article{cupial2026up,
+  title={Up and Down the Abstraction Ladder: Code-Based Skills for Language Agents},
+  author={Cupia{\l}, Bart{\l}omiej and Tuyls, Jens and Wo{\l}czyk, Maciej and Paglieri, Davide and Klissarov, Martin and Eysenbach, Benjamin and Mi{\l}o{\'s}, Piotr and Narasimhan, Karthik R},
+  journal={arXiv preprint arXiv:2609.31076},
+  year={2026}
 }
 ```

@@ -45,6 +45,8 @@ class ItemParser:
         "on left foreclaw": (True, False),
         "on right forehoof": (True, False),
         "on left forehoof": (True, False),
+        "on right tentacle": (True, False),
+        "on left tentacle": (True, False),
         "at the ready": (False, True),
         "in quiver": (False, True),
         "in quiver pouch": (False, True),

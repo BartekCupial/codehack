@@ -63,6 +63,23 @@ class SaveOnException(gym.Wrapper):
             info = bot.last_info
             info["end_status"] = NLE.StepStatus.ABORTED
 
+            # `bot.last_info` is a snapshot taken at the start of the latest
+            # internal Bot.step(); for any failure that occurs after the 1st
+            # internal step inside a strategy_step it will be the raw NLE info
+            # and miss the keys that bot.strategy_step normally writes at the
+            # end (e.g. "env_steps"). Even when the keys are present they hold
+            # stale values from the *previous* strategy step. Mirror what
+            # bot.strategy_step does at its end so downstream consumers
+            # (experience_manager, stats trackers, NoProgressFeedback) see a
+            # consistent episode_extra_stats for this aborted strategy step.
+            extra_stats = info.get("episode_extra_stats", {})
+            extra_stats["env_steps"] = bot.steps
+            extra_stats["strategy_reward"] = bot.reward
+            extra_stats["strategy_useful"] = bot.steps > 0
+            extra_stats["success_rate"] = False
+            extra_stats["strategy_steps"] = bot.strategy_steps
+            info["episode_extra_stats"] = extra_stats
+
             return obs, bot.reward, True, False, info
 
     def _file_name(self):

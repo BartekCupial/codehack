@@ -74,9 +74,13 @@ class ItemParser:
             # Item details
             r"(?:\s+(?P<enchantment>[+-]\d+))?"  # Space before enchantment
             r"\s+(?P<name>[a-zA-Z0-9-!'# ]+)"  # Required space before name
-            # Optional information
+            # Optional information. Up to two parenthesized info groups can appear
+            # because NetHack emits class-specific status (e.g. "(lit)" for a lamp)
+            # separately from the equipment-slot status that comes after
+            # (e.g. "(at the ready)" from W_QUIVER). See objnam.c xname_flags().
             r"(?:\s+\((?P<uses>[0-9]+:[0-9]+|no charge)\))?"
             r"(?:\s+\((?P<info>[a-zA-Z0-9; ]+(?:,\s+(?:flickering|gleaming|glimmering))?[a-zA-Z0-9; ]*)\))?"
+            r"(?:\s+\((?P<info2>[a-zA-Z0-9; ]+(?:,\s+(?:flickering|gleaming|glimmering))?[a-zA-Z0-9; ]*)\))?"
             # Shop information
             r"(?:\s+\((?P<shop_status>for sale|unpaid),\s+"  # Matches shop status
             r"(?:\d+\s+aum,\s+)?(?P<shop_price>\d+)\s+[^)]*\)?)?"  # Matches shop price; [^)]*\)? handles truncated inv strings (NLE caps inv_strs at 80 chars)
@@ -148,7 +152,11 @@ class ItemParser:
             parsed_item["beatitude"] = beatitude
 
     def _parse_equipment_status(self, parsed_item, item_info):
-        info = item_info["info"]
+        # When two info parens are present (e.g. "(lit) (at the ready)" on a
+        # quivered lit lamp), the rightmost one is the equipment-slot status
+        # because NetHack appends W_WEP / W_SWAPWEP / W_QUIVER after the
+        # class-specific status.
+        info = item_info["info2"] or item_info["info"]
         if info.startswith("weapon in ") or info.startswith("tethered weapon in "):
             parsed_item["equipped"] = True
             parsed_item["at_ready"] = False

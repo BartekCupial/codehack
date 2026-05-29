@@ -30,6 +30,8 @@ class ItemParser:
     EQUIPPED_STATES = {
         "being worn": (True, False),
         "being worn; slippery": (True, False),
+        "being doffed": (True, False),
+        "being donned": (True, False),
         "wielded": (True, False),
         "wielded in other hand": (True, True),
         "chained to you": (True, False),

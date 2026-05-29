@@ -161,7 +161,11 @@ class ItemParser:
         # because NetHack appends W_WEP / W_SWAPWEP / W_QUIVER after the
         # class-specific status.
         info = item_info["info2"] or item_info["info"]
-        if info.startswith("weapon in ") or info.startswith("tethered weapon in "):
+        if (
+            info.startswith("weapon in ")
+            or info.startswith("tethered weapon in ")
+            or info.startswith("attached to ")
+        ):
             parsed_item["equipped"] = True
             parsed_item["at_ready"] = False
         else:
